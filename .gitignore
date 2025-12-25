@@ -1,0 +1,36 @@
+# IDE settings
+*.idea
+*.vscode
+*.devcontainer
+
+# Building environment and artefacts
+## meson
+*build*
+## cmake
+*cmake-build-*
+*.cmake
+*Makefile
+## fpm
+*.deb
+
+# Python environment
+venv
+__pycache__
+.*_cache
+.python-version
+requrements.txt
+*.egg-info
+
+# Python runtime requirements
+pyrequirements
+
+# docker
+docker-compose.debug.yml
+docker-compose.yml
+
+# macOS
+.DS_Store
+
+*media
+*ssh
+*logs
