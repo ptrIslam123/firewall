@@ -9,7 +9,6 @@
 ## cmake
 *cmake-build-*
 *.cmake
-*Makefile
 ## fpm
 *.deb
 

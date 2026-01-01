@@ -38,7 +38,7 @@ static constexpr int    QUEUE_ID = 0;
 
 // Interface name: "lo" - loopback interface for testing
 // Change to "eth0", "ens3", etc. for physical interfaces
-static constexpr char   IFNAME[] = "enp3s0";
+static constexpr char   IFNAME[] = "veth0";
 
 /* ============= MAIN FUNCTION ============= */
 int main() {
