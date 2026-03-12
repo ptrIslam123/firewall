@@ -37,7 +37,7 @@ redirect_all.o: redirect_all.c
 	$(CLANG) $(BPF_CFLAGS) -c $< -o $@
 
 # Setup veth pair and network
-setup-veth-pair:
+add-veth:
 	@echo "$(BLUE)=== Setting up veth pair ===$(NC)"
 	
 	# 1. Check if veth already exists
@@ -82,7 +82,7 @@ setup-veth-pair:
 
 
 # Cleanup - remove veth pair
-cleanup-veth-pair:
+remove-veth:
 	@echo "$(BLUE)=== Cleaning up veth configuration ===$(NC)"
 	
 	# Remove from bridge if bridged
@@ -116,7 +116,7 @@ cleanup-veth-pair:
 	@echo "$(GREEN)Cleanup complete$(NC)"
 
 # Load eBPF program and attach to interface
-load: redirect_all.o clean-bpf
+load-veth: redirect_all.o clean-bpf
 	# 1. Load new program
 	@echo "Loading eBPF program..."
 	sudo bpftool prog load redirect_all.o $(BPF_MOUNT)/$(PROG_NAME)
@@ -188,34 +188,8 @@ unpin:
 		fi; \
 	fi
 
-# Clean BPF objects before load (simplified)
-clean-bpf:
-	@echo "Cleaning old objects..."
-	# 1. Detach from interface
-	-sudo ip link set dev $(INTERFACE) xdp off 2>/dev/null
-	-sudo bpftool net detach xdp dev $(INTERFACE) 2>/dev/null
-	
-	# 2. Remove files (usually enough)
-	-sudo rm -f $(BPF_MOUNT)/$(PROG_NAME) $(BPF_MOUNT)/$(MAP_NAME) 2>/dev/null
-	
-	# 3. Try to remove program (optional)
-	@PROG_ID=$$(sudo bpftool prog show 2>/dev/null | awk '/xdp_redirect_all/ {print $$1}' | cut -d: -f1 | head -1); \
-	if [ -n "$$PROG_ID" ]; then \
-		echo "   Removing program ID: $$PROG_ID"; \
-		sudo bpftool prog destroy id $$PROG_ID 2>/dev/null || true; \
-	fi
-	
-	# 4. Try to remove map (optional)
-	@MAP_ID=$$(sudo bpftool map show 2>/dev/null | awk '/xsks_map/ {print $$1}' | cut -d: -f1 | head -1); \
-	if [ -n "$$MAP_ID" ]; then \
-		echo "   Removing map ID: $$MAP_ID"; \
-		sudo bpftool map delete id $$MAP_ID key 0 0 0 0 2>/dev/null || true; \
-	fi
-	
-	@echo "   Cleanup complete"
-
 # Check status
-check:
+status-veth:
 	@echo "=== Current status ==="
 	@echo ""
 	@echo "1. Interface $(INTERFACE):"
@@ -256,9 +230,41 @@ check:
 	fi
 
 # Unload program
-unload: clean-bpf
+unload-veth: clean-bpf
 	make unpin 
 	@echo "✅ Unload complete"
+
+reload-veth:
+	make clean
+	make compile
+	make unload-veth
+	make load-veth
+
+# Clean BPF objects before load (simplified)
+clean-bpf:
+	@echo "Cleaning old objects..."
+	# 1. Detach from interface
+	-sudo ip link set dev $(INTERFACE) xdp off 2>/dev/null
+	-sudo bpftool net detach xdp dev $(INTERFACE) 2>/dev/null
+	
+	# 2. Remove files (usually enough)
+	-sudo rm -f $(BPF_MOUNT)/$(PROG_NAME) $(BPF_MOUNT)/$(MAP_NAME) 2>/dev/null
+	
+	# 3. Try to remove program (optional)
+	@PROG_ID=$$(sudo bpftool prog show 2>/dev/null | awk '/xdp_redirect_all/ {print $$1}' | cut -d: -f1 | head -1); \
+	if [ -n "$$PROG_ID" ]; then \
+		echo "   Removing program ID: $$PROG_ID"; \
+		sudo bpftool prog destroy id $$PROG_ID 2>/dev/null || true; \
+	fi
+	
+	# 4. Try to remove map (optional)
+	@MAP_ID=$$(sudo bpftool map show 2>/dev/null | awk '/xsks_map/ {print $$1}' | cut -d: -f1 | head -1); \
+	if [ -n "$$MAP_ID" ]; then \
+		echo "   Removing map ID: $$MAP_ID"; \
+		sudo bpftool map delete id $$MAP_ID key 0 0 0 0 2>/dev/null || true; \
+	fi
+	
+	@echo "   Cleanup complete"
 
 # Full cleanup
 clean:
@@ -269,29 +275,10 @@ clean:
 trace:
 	sudo cat /sys/kernel/debug/tracing/trace_pipe
 
-# Help
-help:
-	@echo "Available commands:"
-	@echo ""
-	@echo "BASIC:"
-	@echo "  make all                 - compile and load (recommended)"
-	@echo "  make compile             - compile eBPF program only"
-	@echo "  make load                - load with automatic map pinning"
-	@echo ""
-	@echo "MAP MANAGEMENT:"
-	@echo "  make pin                 - pin map (if program already loaded)"
-	@echo "  make unpin               - unpin map"
-	@echo "  make setup-veth-pair     - setup veth pair"
-	@echo ""
-	@echo "CHECK:"
-	@echo "  make check               - check current status"
-	@echo ""
-	@echo "CLEANUP:"
-	@echo "  make unload              - unload program (keeps .o files)"
-	@echo "  make clean               - full cleanup (including .o files)"
-	@echo "  make cleanup-veth-pair	  - cleanup veth pair
-	@echo ""
-	@echo "HELP:"
-	@echo "  make help                - this help"
+ping-veth:
+	ping -I veth1 -c 3 10.10.0.1
+
+fs:
+	sudo tree /sys/fs/bpf/
 
 .PHONY: all compile load pin unpin clean-bpf check unload clean help

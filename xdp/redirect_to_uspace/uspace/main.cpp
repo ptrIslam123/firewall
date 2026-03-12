@@ -7,11 +7,12 @@
  * 2. Creates an AF_XDP socket bound to a specific interface and queue
  * 3. Registers the socket in XSKMAP for XDP redirection
  * 4. Receives and displays incoming packets
- * 
- * Compile: g++ -std=c++17 -o xdp_receiver xdp_receiver.cpp -lxdp -lbpf -lpthread
- * Run: sudo ./xdp_receiver
- * Test: ping -I IFNAME 127.0.0.1
  */
+
+#include <cassert>
+#include <string>
+#include <string_view>
+#include <iostream>
 
 #include <cstdio>
 #include <cstdlib>
@@ -32,16 +33,107 @@ static constexpr size_t FRAME_SZ = 4096;
 // Larger rings = higher throughput but more memory usage
 static constexpr size_t RING_SZ  = 4096;
 
-// Queue ID: 0 - RX queue index to bind to
-// For physical NICs: 0 to (num_queues-1), for loopback always 0
-static constexpr int    QUEUE_ID = 0;
+// Process redirected packages from the bpf program
+void ProcessRedirectedPackets(
+    uint32_t rx_packets, 
+    struct xsk_ring_cons& rxq,
+    uint32_t& rx_idx,
+    struct xsk_ring_prod& fq,
+    uint32_t& fq_idx
+) {
+    // Counter for received packets
+    static int packet_count = 0;
 
-// Interface name: "lo" - loopback interface for testing
-// Change to "eth0", "ens3", etc. for physical interfaces
-static constexpr char   IFNAME[] = "veth0";
+    /* 6.2 Process each received packet */
+    for (uint32_t i = 0; i < rx_packets; i++) {
+        // Get packet descriptor (address and length)
+        uint64_t addr = xsk_ring_cons__rx_desc(&rxq, rx_idx + i)->addr;
+        uint32_t len = xsk_ring_cons__rx_desc(&rxq, rx_idx + i)->len;
+        
+        packet_count++;
+        printf("[PACKET #%d] %u bytes | Addr: 0x%lx\n", 
+                packet_count, len, (unsigned long)addr);
+    }
+    
+    /* 6.4 Release packets from RX queue
+        * - Marks descriptors as processed
+        * - Makes room for new packets in RX ring
+        */
+    xsk_ring_cons__release(&rxq, rx_packets);
+    
+    /* 6.5 Recycle buffers back to Fill Queue
+        * - Get the same buffers we just processed
+        * - Add them back to Fill Queue for reuse
+        * - This is CRITICAL: kernel needs empty buffers to continue
+        */
+    uint32_t filled = xsk_ring_prod__reserve(&fq, rx_packets, &fq_idx);
+    for (uint32_t i = 0; i < filled; i++) {
+        *xsk_ring_prod__fill_addr(&fq, fq_idx + i) = 
+            xsk_ring_cons__rx_desc(&rxq, rx_idx + i)->addr;
+    }
+    xsk_ring_prod__submit(&fq, filled);
+}
+
+void Usage(std::string_view programName) {
+    std::cerr << "Usage: " << programName << " --iface <interface> --queue-id <queue_id>\n"
+              << "\nOptions:\n"
+              << "  --iface <name>     Interface name (e.g., eth0, lo, ens3)\n"
+              << "  --queue-id <num>   RX queue index (0 to num_queues-1)\n"
+              << "\nExamples:\n"
+              << "  " << programName << " --iface eth0 --queue-id 0\n"
+              << "  " << programName << " --iface lo --queue-id 0\n";
+}
 
 /* ============= MAIN FUNCTION ============= */
-int main() {
+int main(int argc, char** argv) {
+    assert(argc > 0);
+    std::string_view program{argv[0]};
+
+    if (argc <=  1) {
+        Usage(program);
+        return EXIT_SUCCESS;
+    }
+
+    // Interface name: "lo" - loopback interface for testing
+    // Change to "eth0", "ens3", etc. for physical interfaces
+    std::string_view iface;
+
+    // Queue ID: 0 - RX queue index to bind to
+    // For physical NICs: 0 to (num_queues-1), for loopback always 0
+    int queueId = -1;
+
+    for (auto i = 1; i < argc; ) {
+        std::string_view arg{argv[i]};
+
+        if (arg == "--iface" && i + 1 < argc) {
+            iface = argv[i + 1];
+            i += 2;
+        } 
+        else if (arg == "--queue" && i + 1 < argc) {
+            queueId = std::stoi(argv[i + 1]);
+            i += 2;
+        } else if (arg == "--help" || arg == "-h") {
+            Usage(program);
+            return EXIT_SUCCESS;
+        } else {
+            std::cerr << "Error: Unknown argument: " << arg << "\n";
+            Usage(program);
+            return EXIT_FAILURE;
+        }
+    }
+
+    if (iface.empty()) {
+        std::cerr << "Error: --iface is required\n";
+        Usage(program);
+        return EXIT_FAILURE;
+    }
+    
+    if (queueId < 0) {
+        std::cerr << "Error: --queue-id is required and must be >= 0\n";
+        Usage(program);
+        return EXIT_FAILURE;
+    }
+
     // ===== PHASE 1: VARIABLE DECLARATIONS =====
     // All variables declared at the beginning (C++ scope rules with throw)
     
@@ -62,10 +154,10 @@ int main() {
     int ret = 0;                // Return code from libxdp functions
     int xsks_map_fd = 0;        // File descriptor for XSKMAP BPF map
     uint32_t idx = 0;           // Index in ring buffer
-    int packet_count = 0;       // Counter for received packets
+    
     
     printf("=== AF_XDP Packet Receiver ===\n");
-    printf("Interface: %s, Queue: %d\n\n", IFNAME, QUEUE_ID);
+    printf("Interface: %s, Queue: %d\n\n", iface.data(), queueId);
     
     // ===== PHASE 2: UMEM ALLOCATION AND SETUP =====
     
@@ -132,12 +224,12 @@ int main() {
         .bind_flags = XDP_COPY,              // COPY mode for loopback
     };
     
-    ret = xsk_socket__create_shared(&xsk, IFNAME, QUEUE_ID,
+    ret = xsk_socket__create_shared(&xsk, iface.data(), queueId,
                                     umem, &rxq, &txq, &fq, &cq, &xsk_cfg);
     if (ret) {
         fprintf(stderr, "xsk_socket__create_shared failed: %d\n", ret);
         fprintf(stderr, "Possible reasons:\n");
-        fprintf(stderr, "1. Interface %s doesn't support XDP\n", IFNAME);
+        fprintf(stderr, "1. Interface %s doesn't support XDP\n", iface.data());
         fprintf(stderr, "2. XDP_COPY flag not set for loopback\n");
         fprintf(stderr, "3. eBPF program not loaded on interface\n");
         throw 1;
@@ -171,7 +263,7 @@ int main() {
         fprintf(stderr, "This is the most frequent cause of AF_XDP issues!\n");
         throw 1;
     }
-    printf("[4] Socket registered in xsks_map[%d]\n", QUEUE_ID);
+    printf("[4] Socket registered in xsks_map[%d]\n", queueId);
     
     // ===== PHASE 5: FILL QUEUE INITIALIZATION =====
     
@@ -202,7 +294,7 @@ int main() {
      */
     xsk_ring_prod__submit(&fq, n);
     printf("[5] Fill Queue filled with %u buffers\n", n);
-    printf("\n[READY] Waiting for packets (send ping to %s)...\n", IFNAME);
+    printf("\n[READY] Waiting for packets (send ping to %s)...\n", iface.data());
     
     // ===== PHASE 6: MAIN PACKET PROCESSING LOOP =====
     
@@ -215,37 +307,8 @@ int main() {
          * - rx_idx is set to starting index in RX ring
          */
         uint32_t rx_packets = xsk_ring_cons__peek(&rxq, 64, &rx_idx);
-        
         if (rx_packets > 0) {
-            /* 6.2 Process each received packet */
-            for (uint32_t i = 0; i < rx_packets; i++) {
-                // Get packet descriptor (address and length)
-                uint64_t addr = xsk_ring_cons__rx_desc(&rxq, rx_idx + i)->addr;
-                uint32_t len = xsk_ring_cons__rx_desc(&rxq, rx_idx + i)->len;
-                
-                packet_count++;
-                printf("[PACKET #%d] %u bytes | Addr: 0x%lx\n", 
-                       packet_count, len, (unsigned long)addr);
-            }
-            
-            /* 6.4 Release packets from RX queue
-             * - Marks descriptors as processed
-             * - Makes room for new packets in RX ring
-             */
-            xsk_ring_cons__release(&rxq, rx_packets);
-            
-            /* 6.5 Recycle buffers back to Fill Queue
-             * - Get the same buffers we just processed
-             * - Add them back to Fill Queue for reuse
-             * - This is CRITICAL: kernel needs empty buffers to continue
-             */
-            uint32_t filled = xsk_ring_prod__reserve(&fq, rx_packets, &fq_idx);
-            for (uint32_t i = 0; i < filled; i++) {
-                *xsk_ring_prod__fill_addr(&fq, fq_idx + i) = 
-                    xsk_ring_cons__rx_desc(&rxq, rx_idx + i)->addr;
-            }
-            xsk_ring_prod__submit(&fq, filled);
-            
+            ProcessRedirectedPackets(rx_packets, rxq, rx_idx, fq, fq_idx);
         } else {
             /* 6.6 No packets available - sleep briefly
              * - Avoids busy-waiting consuming 100% CPU
