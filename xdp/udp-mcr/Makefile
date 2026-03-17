@@ -192,7 +192,10 @@ trace:
 	sudo cat /sys/kernel/debug/tracing/trace_pipe
 
 ping:
-	echo "hello world" | sudo ip netns exec $(NET_NS1) nc -u $(VETH0_IP) 12345 -W 1
+	sudo ip netns exec $(NET_NS1) ping -I $(VETH1) $(VETH0_IP) -c 1
+
+mcr-test:
+	sudo ip netns exec $(NET_NS1) python mcr.py  --host $(VETH0_IP) --port 12345 --key_hex 1234567812345678 --udp client
 
 udp-tcpdum:
 	sudo ip netns exec $(NET_NS1) tcpdump -i any -A -vv udp -l

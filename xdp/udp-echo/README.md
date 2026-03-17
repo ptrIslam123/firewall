@@ -2,7 +2,7 @@
 
 A minimal demonstration of high-performance packet processing using eBPF XDP and AF_XDP sockets for zero-copy packet transfer between kernel and userspace.
 
-## 📋 Overview
+## Overview
 
 This project showcases:
 - **eBPF XDP program** running in kernel space that redirects packets

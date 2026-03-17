@@ -15,7 +15,7 @@
 #include <net/if.h>           // Network interface functions (if_nametoindex)
 #include <linux/if_link.h>    // XDP constants (XDP_FLAGS_*)
 
-#include "checksum.h"
+#include "udpp_mcr.c"
 
 /* ============= CONFIGURATION SECTION ============= */
 
@@ -107,24 +107,10 @@ void ProcessIngressPacket(void* pkt, int len, std::string_view secret_key) {
         printf("No UDP payload\n");
         return;
     }
-    uint8_t *udp_payload_end = (uint8_t*)data_end;
-
-    {
-        printf("ASCI UDP PAYLOAD:[\n");
-        for (auto it = udp_payload; it < udp_payload_end; ++it) {
-            printf("%c", (char)*it);
-        }
-        printf("]\n");
-    }
-    
-    swap_mac(eth);
-    swap_ip(ip);
-    swap_udp_ports(udp);
-    
-    compute_ip_checksum(ip); 
-    compute_udp_checksum(ip, udp);
-
-    printf("\n=== Retransmited the packet ===\n");
+    udp_mcr_entry(
+        eth, ip, udp, (uint8_t*)udp_payload, (uint8_t*)data_end, 
+        (uint8_t*)secret_key.data(), secret_key.size()
+    );
 }
 
 /**
